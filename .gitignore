@@ -1,4 +1,5 @@
 node_modules/
+apps/web/.next/
 apps/web/node_modules/
 .venv/
 apps/api/game_factory.db
