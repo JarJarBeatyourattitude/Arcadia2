@@ -11,6 +11,8 @@ type Game = {
   prompt: string;
   code: string;
   created_at: string;
+  multiplayer?: boolean;
+  max_players?: number | null;
 };
 
 export default function PlayPage({ params }: { params: { id: string } }) {
@@ -38,6 +40,8 @@ export default function PlayPage({ params }: { params: { id: string } }) {
 (() => {
   const perf = ${perfMode ? "true" : "false"};
   window.__GF_PERF_MODE = perf;
+  window.__GF_MP_HUD = true;
+  window.__GF_DEFAULT_ROOM = "game-${params.id}";
   if (perf) {
     const dpr = window.devicePixelRatio || 1;
     try {

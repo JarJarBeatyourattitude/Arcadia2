@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { ReactNode } from "react";
+import PartySidebar from "../components/PartySidebar";
 
 export const metadata = {
   title: "Game Factory",
@@ -15,11 +16,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <a className="logo" href="/">Game Factory</a>
             <nav className="top-nav">
               <a href="/">Create</a>
-              <a href="/lobby">Lobby</a>
-              <a href="/toolkit">Toolkit</a>
+              <a href="/help">Help</a>
               <a href="/account">Account</a>
             </nav>
           </header>
+          <PartySidebar />
           {children}
           <footer className="footer">Built for rapid game magic. No Docker required.</footer>
         </div>

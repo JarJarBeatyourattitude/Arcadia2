@@ -12,6 +12,10 @@ type Game = {
   prompt: string;
   code: string;
   created_at: string;
+  likes?: number;
+  play_count?: number;
+  multiplayer?: boolean;
+  max_players?: number | null;
 };
 
 export default function GamePage({ params }: { params: { id: string } }) {
@@ -31,15 +35,35 @@ export default function GamePage({ params }: { params: { id: string } }) {
   const [votes, setVotes] = useState(0);
   const [me, setMe] = useState<any | null>(null);
   const [perfMode, setPerfMode] = useState(true);
+  const clientId = useMemo(() => {
+    if (typeof window === "undefined") return "gf-client";
+    const key = "gf_client_id";
+    let id = "";
+    try {
+      id = window.localStorage.getItem(key) || "";
+    } catch {}
+    if (!id) {
+      id = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      try {
+        window.localStorage.setItem(key, id);
+      } catch {}
+    }
+    return id;
+  }, []);
   const isOwner = me && game && me.id === game.creator_id;
 
   function withAIHelper(code: string) {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
+    const clientName = me?.username || `Guest-${clientId.slice(0, 4)}`;
     const helper = `
 <script>
 (() => {
   const perf = ${perfMode ? "true" : "false"};
   window.__GF_PERF_MODE = perf;
+  window.__GF_MP_HUD = true;
+  window.__GF_DEFAULT_ROOM = "game-${game?.id ?? "lobby"}";
+  window.__GF_CLIENT_ID = "${clientId}";
+  window.__GF_USERNAME = "${clientName.replace(/"/g, '\\"')}";
   if (perf) {
     const dpr = window.devicePixelRatio || 1;
     try {
@@ -63,17 +87,94 @@ window.GameFactoryAI = async function(prompt, system, timeoutMs=8000){
     clearTimeout(timer);
   }
 };
-window.GameFactoryMultiplayer = function(roomId){
-  const ws = new WebSocket("${wsUrl}/ws/" + encodeURIComponent(roomId || "lobby"));
+window.GameFactoryMultiplayer = function(roomId, options){
+  if (roomId && typeof roomId === 'object') { options = roomId; roomId = options.roomId; }
+  options = options || {};
+  const room = roomId || window.__GF_DEFAULT_ROOM || "lobby";
+  const clientId = (options.clientId || window.__GF_CLIENT_ID || "").toString().slice(0, 48);
+  const name = (options.name || window.__GF_USERNAME || "").toString().slice(0, 24);
+  const maxPlayers = options.maxPlayers || window.__GF_MP_MAX || null;
+  const params = new URLSearchParams();
+  if (clientId) params.set("client_id", clientId);
+  if (name) params.set("name", name);
+  if (maxPlayers) params.set("max_players", String(maxPlayers));
+  const ws = new WebSocket("${wsUrl}/ws/" + encodeURIComponent(room) + (params.toString() ? "?" + params.toString() : ""));
   const handlers = [];
+  const stateHandlers = [];
+  const statusHandlers = [];
+  const queue = [];
+  let hud;
+  function setStatus(s){
+    statusHandlers.forEach((fn)=>fn(s));
+    if (window.__GF_MP_HUD){
+      if (!hud){
+        hud = document.createElement('div');
+        hud.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;background:rgba(0,0,0,0.6);color:#9ff;padding:6px 8px;border-radius:8px;font:12px system-ui';
+        document.body.appendChild(hud);
+      }
+      hud.textContent = 'MP: ' + s + ' (' + room + ')';
+    }
+  }
+  ws.onopen = ()=>{
+    setStatus('connected');
+    while (queue.length) ws.send(queue.shift());
+  };
+  ws.onclose = ()=>setStatus('disconnected');
+  ws.onerror = ()=>setStatus('error');
   ws.onmessage = (evt) => {
-    handlers.forEach((fn) => fn(evt.data));
+    let parsed = null;
+    try { parsed = JSON.parse(evt.data); } catch {}
+    if (parsed && parsed.type === 'room_state') {
+      if (maxPlayers && (parsed.players?.length || 0) >= maxPlayers && !parsed.players?.find((p)=>p.id===clientId)) {
+        setStatus('full');
+        try { ws.close(); } catch {}
+        return;
+      }
+      if (window.__GF_MP_HUD && hud) {
+        hud.textContent = 'MP: ' + 'connected' + ' (' + room + ') ' + (parsed.players?.length || 0) + ' players';
+      }
+    }
+    if (parsed && parsed.type === 'state') {
+      stateHandlers.forEach((fn)=>fn(parsed.state));
+    }
+    handlers.forEach((fn) => fn(evt.data, parsed));
   };
   return {
+    room,
+    clientId,
     send: (data) => {
-      if (ws.readyState === 1) ws.send(typeof data === "string" ? data : JSON.stringify(data));
+      const normalize = (input) => {
+        if (typeof input !== "string") {
+          if (input && input.type === "join") {
+            input.id = clientId || input.id;
+            input.name = name || input.name;
+            if (!input.joinedAt) input.joinedAt = Date.now();
+          }
+          return JSON.stringify(input);
+        }
+        try {
+          const parsed = JSON.parse(input);
+          if (parsed && parsed.type === "join") {
+            parsed.id = clientId || parsed.id;
+            parsed.name = name || parsed.name;
+            if (!parsed.joinedAt) parsed.joinedAt = Date.now();
+            return JSON.stringify(parsed);
+          }
+        } catch {}
+        return input;
+      };
+      const payload = normalize(data);
+      if (ws.readyState === 1) ws.send(payload);
+      else queue.push(payload);
+    },
+    broadcastState: (state) => {
+      const payload = JSON.stringify({ type: 'state', state });
+      if (ws.readyState === 1) ws.send(payload);
+      else queue.push(payload);
     },
     onMessage: (fn) => handlers.push(fn),
+    onState: (fn) => stateHandlers.push(fn),
+    onStatus: (fn) => statusHandlers.push(fn),
     disconnect: () => ws.close()
   };
 };
@@ -102,12 +203,23 @@ window.GameFactoryKit = (function(){
       tick();
     });
   };
-  const storage = {
-    save:(key,val)=>localStorage.setItem(key,JSON.stringify(val)),
-    load:(key,def=null)=>{ try{const v=localStorage.getItem(key); return v?JSON.parse(v):def;}catch{return def;} },
-    slotSave:(slot,val)=>localStorage.setItem("gf_slot_"+slot,JSON.stringify(val)),
-    slotLoad:(slot,def=null)=>{ try{const v=localStorage.getItem("gf_slot_"+slot); return v?JSON.parse(v):def;}catch{return def;} }
-  };
+  const storage = (function(){
+    const mem = {};
+    const getLS = () => { try { return window.localStorage; } catch { return null; } };
+    const save = (key,val) => {
+      const ls = getLS();
+      if (ls) { try { ls.setItem(key, JSON.stringify(val)); return; } catch {} }
+      mem[key] = val;
+    };
+    const load = (key, def=null) => {
+      const ls = getLS();
+      if (ls) { try { const v = ls.getItem(key); return v ? JSON.parse(v) : def; } catch { return def; } }
+      return Object.prototype.hasOwnProperty.call(mem, key) ? mem[key] : def;
+    };
+    const slotSave = (slot, val) => save("gf_slot_"+slot, val);
+    const slotLoad = (slot, def=null) => load("gf_slot_"+slot, def);
+    return { save, load, slotSave, slotLoad };
+  })();
   const input = (function(){
     const keys = {};
     const mouse = {x:0,y:0,down:false};

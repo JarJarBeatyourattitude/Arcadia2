@@ -21,6 +21,8 @@ class GameOut(BaseModel):
     creator_id: int | None = None
     is_public: bool = True
     play_count: int | None = None
+    multiplayer: bool = False
+    max_players: int | None = None
     likes: int | None = None
 
     class Config:
@@ -92,6 +94,50 @@ class CommentOut(BaseModel):
     user_id: int
     content: str
     created_at: datetime
+
+
+class PartyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    is_private: bool = False
+    max_players: int | None = None
+
+
+class PartyOut(BaseModel):
+    id: str
+    name: str
+    is_private: bool
+    join_code: str | None = None
+    max_players: int | None = None
+    member_count: int | None = None
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class PartyMemberOut(BaseModel):
+    user_id: int
+    username: str
+    joined_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class PartyDetailOut(BaseModel):
+    party: PartyOut
+    members: list[PartyMemberOut]
+
+    class Config:
+        from_attributes = True
+
+
+class PartyJoinIn(BaseModel):
+    code: str | None = None
+
+
+class PartyVoteIn(BaseModel):
+    game_id: int
 
 
 class AiIn(BaseModel):

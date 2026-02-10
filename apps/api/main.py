@@ -20,7 +20,7 @@ from openai import OpenAI
 from .db import SessionLocal, init_db
 from passlib.hash import pbkdf2_sha256
 
-from .models import Game, GameVersion, Room, User, Session, GameVote, GameComment
+from .models import Game, GameVersion, Room, User, Session, GameVote, GameComment, Party, PartyMember, PartyVote
 from .schemas import (
     AiIn,
     AiOut,
@@ -36,6 +36,12 @@ from .schemas import (
     GenerateIn,
     GenerateOut,
     UserOut,
+    PartyCreate,
+    PartyOut,
+    PartyMemberOut,
+    PartyDetailOut,
+    PartyJoinIn,
+    PartyVoteIn,
 )
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
@@ -98,6 +104,22 @@ def _sanitize_html(code: str) -> str:
     sanitized = re.sub(r"<script[^>]+src=['\"][^'\"]+['\"][^>]*>\\s*</script>", "", sanitized, flags=re.I)
     sanitized = re.sub(r"<link[^>]+href=['\"]https?://[^'\"]+['\"][^>]*>", "", sanitized, flags=re.I)
     return sanitized
+
+
+def _infer_multiplayer_meta(code: str) -> tuple[bool, int | None]:
+    if not code:
+        return False, None
+    multiplayer = "GameFactoryMultiplayer" in code
+    max_players = None
+    match = re.search(r"maxPlayers\\s*[:=]\\s*(\\d{1,2})", code)
+    if not match:
+        match = re.search(r"max_players\\s*[:=]\\s*(\\d{1,2})", code)
+    if match:
+        try:
+            max_players = int(match.group(1))
+        except ValueError:
+            max_players = None
+    return multiplayer, max_players
 
 
 def _fallback_game(prompt: str) -> Dict[str, str]:
@@ -221,11 +243,13 @@ def _generate_game(prompt: str) -> Dict[str, str]:
         "Use keyboard and/or mouse controls, include a win/lose condition, and show a score. "
         "If you need live AI interaction inside the game, call window.GameFactoryAI(prompt) "
         "which returns a string response. "
-        "For multiplayer, you can use window.GameFactoryMultiplayer(roomId) which returns "
+        "For multiplayer, you can use window.GameFactoryMultiplayer(roomId, opts) which returns "
         "an object with send(data), onMessage(fn), and disconnect(). "
         "Capabilities (optional) quick API cheat-sheet: "
         "AI: await GameFactoryAI(prompt, system?) -> string. "
-        "Multiplayer: const mp=GameFactoryMultiplayer(roomId); mp.send(data); mp.onMessage(fn); mp.disconnect(). "
+        "Multiplayer: const mp=GameFactoryMultiplayer(roomId,{maxPlayers,name,clientId}); mp.send(data); mp.onMessage(fn); mp.disconnect(). "
+        "Always set maxPlayers to the intended room size (e.g., 2 for Tic-Tac-Toe). "
+        "Multiplayer IDs: window.__GF_CLIENT_ID and window.__GF_USERNAME are stable per user. "
         "Math: clamp(v,min,max), lerp(a,b,t), map(v,inMin,inMax,outMin,outMax). "
         "Random: rand(min,max), choice(arr), rng.setSeed(s), rng.next(). "
         "Time: now(), timers.after(ms,fn), timers.tick(). "
@@ -240,7 +264,7 @@ def _generate_game(prompt: str) -> Dict[str, str]:
         "Rendering: sprites.draw(ctx,img,frame,fw,fh,x,y,scale); pseudo3d.project(pt,cam); webgl.create(canvas). "
         "Examples (optional patterns): "
         "AI NPC: const reply=await GameFactoryAI('In character, give a hint about the puzzle'); "
-        "Multiplayer sync: const mp=GameFactoryMultiplayer('room1'); mp.onMessage(msg=>{state=JSON.parse(msg)}); mp.send(JSON.stringify(state)); "
+        "Multiplayer sync: const mp=GameFactoryMultiplayer('room1',{maxPlayers:2}); mp.onMessage(msg=>{state=JSON.parse(msg)}); mp.send(JSON.stringify(state)); "
         "ECS loop: ecs.system(['pos','vel'],(id,p,v,dt)=>{p.x+=v.x*dt}); function tick(dt){ecs.update(dt); requestAnimationFrame(tick);} "
         "If it fits the design, prefer using at least 2 GameFactoryKit utilities (not just Math.random) so tools are exercised. "
         "Use these selectively and creatively so games stay diverse. "
@@ -363,11 +387,12 @@ def generate_stream(payload: GenerateIn):
             "Use keyboard and/or mouse controls, include a win/lose condition, and show a score. "
             "If you need live AI interaction inside the game, call window.GameFactoryAI(prompt) "
             "which returns a string response. "
-            "For multiplayer, you can use window.GameFactoryMultiplayer(roomId) which returns "
+            "For multiplayer, you can use window.GameFactoryMultiplayer(roomId, opts) which returns "
             "an object with send(data), onMessage(fn), and disconnect(). "
             "Capabilities (optional) quick API cheat-sheet: "
             "AI: await GameFactoryAI(prompt, system?) -> string. "
-            "Multiplayer: const mp=GameFactoryMultiplayer(roomId); mp.send(data); mp.onMessage(fn); mp.disconnect(). "
+            "Multiplayer: const mp=GameFactoryMultiplayer(roomId,{maxPlayers,name,clientId}); mp.send(data); mp.onMessage(fn); mp.disconnect(). "
+            "Always set maxPlayers to the intended room size (e.g., 2 for Tic-Tac-Toe). "
             "Math: clamp(v,min,max), lerp(a,b,t), map(v,inMin,inMax,outMin,outMax). "
             "Random: rand(min,max), choice(arr), rng.setSeed(s), rng.next(). "
             "Time: now(), timers.after(ms,fn), timers.tick(). "
@@ -382,7 +407,7 @@ def generate_stream(payload: GenerateIn):
             "Rendering: sprites.draw(ctx,img,frame,fw,fh,x,y,scale); pseudo3d.project(pt,cam); webgl.create(canvas). "
             "Examples (optional patterns): "
             "AI NPC: const reply=await GameFactoryAI('In character, give a hint about the puzzle'); "
-            "Multiplayer sync: const mp=GameFactoryMultiplayer('room1'); mp.onMessage(msg=>{state=JSON.parse(msg)}); mp.send(JSON.stringify(state)); "
+            "Multiplayer sync: const mp=GameFactoryMultiplayer('room1',{maxPlayers:2}); mp.onMessage(msg=>{state=JSON.parse(msg)}); mp.send(JSON.stringify(state)); "
             "ECS loop: ecs.system(['pos','vel'],(id,p,v,dt)=>{p.x+=v.x*dt}); function tick(dt){ecs.update(dt); requestAnimationFrame(tick);} "
             "If it fits the design, prefer using at least 2 GameFactoryKit utilities (not just Math.random) so tools are exercised. "
             "Use these selectively and creatively so games stay diverse. "
@@ -475,29 +500,68 @@ class ConnectionManager:
     def __init__(self) -> None:
         self.rooms: dict[str, set[WebSocket]] = {}
         self.players: dict[WebSocket, dict[str, str | bool]] = {}
+        self.clients: dict[str, dict[str, WebSocket]] = {}
 
     async def connect(self, room: str, websocket: WebSocket) -> None:
         await websocket.accept()
+        client_id = (websocket.query_params.get("client_id") or "").strip()
+        raw_max = (websocket.query_params.get("max_players") or "").strip()
+        max_players: int | None = None
+        if raw_max:
+            try:
+                max_players = max(1, int(raw_max))
+            except ValueError:
+                max_players = None
+        room_max = _get_room_max(room, max_players)
+        if not client_id:
+            client_id = uuid.uuid4().hex[:12]
+        name = (websocket.query_params.get("name") or "Player").strip()[:24]
+        self.clients.setdefault(room, {})
+        if room_max is not None and client_id not in self.clients[room] and len(self.rooms.get(room, set())) >= room_max:
+            try:
+                await websocket.close(code=1008)
+            except Exception:
+                pass
+            return
+        if client_id in self.clients[room]:
+            old = self.clients[room][client_id]
+            if old in self.rooms.get(room, set()):
+                self.rooms[room].discard(old)
+            self.players.pop(old, None)
+            try:
+                await old.close()
+            except Exception:
+                pass
+        self.clients[room][client_id] = websocket
         self.rooms.setdefault(room, set()).add(websocket)
         self.players[websocket] = {
-            "id": uuid.uuid4().hex[:8],
-            "name": "Player",
+            "id": client_id,
+            "name": name or "Player",
             "ready": False,
             "room": room,
         }
-        _upsert_room(room, len(self.rooms.get(room, [])))
+        _upsert_room(room, len(self.rooms.get(room, [])), room_max)
 
     def disconnect(self, room: str, websocket: WebSocket) -> None:
         if room in self.rooms:
             self.rooms[room].discard(websocket)
             if not self.rooms[room]:
                 self.rooms.pop(room, None)
-        self.players.pop(websocket, None)
-        _upsert_room(room, len(self.rooms.get(room, [])))
+        meta = self.players.pop(websocket, None)
+        if meta and room in self.clients:
+            client_id = str(meta.get("id") or "")
+            if client_id and self.clients[room].get(client_id) is websocket:
+                self.clients[room].pop(client_id, None)
+            if not self.clients[room]:
+                self.clients.pop(room, None)
+        _upsert_room(room, len(self.rooms.get(room, [])), None)
 
     async def broadcast(self, room: str, message: str) -> None:
         for ws in list(self.rooms.get(room, [])):
-            await ws.send_text(message)
+            try:
+                await ws.send_text(message)
+            except Exception:
+                self.disconnect(room, ws)
 
     def room_state(self, room: str) -> list[dict[str, str | bool]]:
         players = []
@@ -513,16 +577,32 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _upsert_room(room_id: str, count: int) -> None:
+def _upsert_room(room_id: str, count: int, max_players: int | None) -> None:
     db = SessionLocal()
     try:
         room = db.query(Room).filter(Room.id == room_id).first()
         if not room:
-            room = Room(id=room_id, count=count)
+            room = Room(id=room_id, count=count, max_players=max_players)
             db.add(room)
         else:
             room.count = count
+            if max_players and not room.max_players:
+                room.max_players = max_players
         db.commit()
+    finally:
+        db.close()
+
+
+def _get_room_max(room_id: str, incoming: int | None) -> int | None:
+    db = SessionLocal()
+    try:
+        room = db.query(Room).filter(Room.id == room_id).first()
+        if not room:
+            return incoming
+        if incoming and not room.max_players:
+            room.max_players = incoming
+            db.commit()
+        return room.max_players
     finally:
         db.close()
 
@@ -585,11 +665,125 @@ def lobby_rooms():
     try:
         rooms = []
         for r in db.query(Room).all():
-            rooms.append({"room_id": r.id, "count": r.count})
+            rooms.append({"room_id": r.id, "count": r.count, "max_players": r.max_players})
         rooms.sort(key=lambda r: r["count"], reverse=True)
         return rooms
     finally:
         db.close()
+
+
+@app.get("/parties", response_model=list[PartyOut])
+def list_parties(db: Session = Depends(get_db)) -> list[PartyOut]:
+    parties = db.query(Party).filter(Party.is_private == False).order_by(Party.updated_at.desc()).all()
+    counts = dict(
+        db.query(PartyMember.party_id, func.count(PartyMember.id))
+        .group_by(PartyMember.party_id)
+        .all()
+    )
+    for p in parties:
+        setattr(p, "member_count", counts.get(p.id, 0))
+    return parties
+
+
+@app.post("/parties", response_model=PartyOut)
+def create_party(payload: PartyCreate, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> PartyOut:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    party_id = uuid.uuid4().hex[:8]
+    join_code = None
+    if payload.is_private:
+        join_code = uuid.uuid4().hex[:6]
+    party = Party(
+        id=party_id,
+        name=payload.name,
+        is_private=payload.is_private,
+        join_code=join_code,
+        max_players=payload.max_players,
+    )
+    db.add(party)
+    db.commit()
+    member = PartyMember(party_id=party.id, user_id=user.id)
+    db.add(member)
+    db.commit()
+    db.refresh(party)
+    return party
+
+
+@app.get("/parties/{party_id}", response_model=PartyDetailOut)
+def get_party(party_id: str, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> PartyDetailOut:
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    if party.is_private and not user:
+        raise HTTPException(status_code=403, detail="Login required")
+    members = (
+        db.query(PartyMember, User)
+        .join(User, User.id == PartyMember.user_id)
+        .filter(PartyMember.party_id == party_id)
+        .order_by(PartyMember.joined_at.asc())
+        .all()
+    )
+    out_members = [
+        PartyMemberOut(user_id=u.id, username=u.username, joined_at=m.joined_at)
+        for m, u in members
+    ]
+    return PartyDetailOut(party=PartyOut.model_validate(party), members=out_members)
+
+
+@app.post("/parties/{party_id}/join", response_model=PartyOut)
+def join_party(party_id: str, payload: PartyJoinIn, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> PartyOut:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    if party.is_private and payload.code != party.join_code:
+        raise HTTPException(status_code=403, detail="Invalid join code")
+    if party.max_players:
+        count = db.query(PartyMember).filter(PartyMember.party_id == party_id).count()
+        if count >= party.max_players:
+            raise HTTPException(status_code=403, detail="Party is full")
+    exists = db.query(PartyMember).filter(PartyMember.party_id == party_id, PartyMember.user_id == user.id).first()
+    if not exists:
+        db.add(PartyMember(party_id=party_id, user_id=user.id))
+        db.commit()
+    return party
+
+
+@app.post("/parties/{party_id}/leave")
+def leave_party(party_id: str, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, bool]:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    db.query(PartyMember).filter(PartyMember.party_id == party_id, PartyMember.user_id == user.id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/parties/{party_id}/vote")
+def vote_party(party_id: str, payload: PartyVoteIn, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, bool]:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    vote = db.query(PartyVote).filter(PartyVote.party_id == party_id, PartyVote.user_id == user.id).first()
+    if vote:
+        vote.game_id = payload.game_id
+    else:
+        db.add(PartyVote(party_id=party_id, user_id=user.id, game_id=payload.game_id))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/parties/{party_id}/votes")
+def party_votes(party_id: str, db: Session = Depends(get_db)) -> list[dict[str, int]]:
+    rows = (
+        db.query(PartyVote.game_id, func.count(PartyVote.id).label("votes"))
+        .filter(PartyVote.party_id == party_id)
+        .group_by(PartyVote.game_id)
+        .all()
+    )
+    return [{"game_id": r[0], "votes": r[1]} for r in rows]
 
 
 @app.post("/games", response_model=GameOut)
@@ -598,6 +792,9 @@ def create_game(payload: GameCreate, user: User | None = Depends(get_current_use
         raise HTTPException(status_code=401, detail="Login required")
     data = payload.dict()
     data["code"] = _sanitize_html(data["code"])
+    multiplayer, max_players = _infer_multiplayer_meta(data["code"])
+    data["multiplayer"] = multiplayer
+    data["max_players"] = max_players
     game = Game(**data)
     if user:
         game.creator_id = user.id
@@ -618,11 +815,21 @@ def create_game(payload: GameCreate, user: User | None = Depends(get_current_use
 
 
 @app.get("/games", response_model=list[GameOut])
-def list_games(q: str | None = None, sort: str = "recent", db: Session = Depends(get_db)) -> list[GameOut]:
+def list_games(
+    q: str | None = None,
+    sort: str = "recent",
+    multiplayer: bool = False,
+    min_players: int | None = None,
+    db: Session = Depends(get_db),
+) -> list[GameOut]:
     query = db.query(Game).filter(Game.is_public == True)
     if q:
         like = f"%{q}%"
         query = query.filter((Game.title.ilike(like)) | (Game.description.ilike(like)))
+    if multiplayer:
+        query = query.filter(Game.multiplayer == True)
+    if min_players:
+        query = query.filter(Game.max_players >= min_players)
     if sort == "top":
         vote_counts = (
             db.query(GameVote.game_id, func.count(GameVote.id).label("votes"))
@@ -689,6 +896,9 @@ def update_game(game_id: int, payload: GameUpdate, db: Session = Depends(get_db)
         game.prompt = payload.prompt
     if payload.code is not None:
         game.code = _sanitize_html(payload.code)
+        multiplayer, max_players = _infer_multiplayer_meta(game.code)
+        game.multiplayer = multiplayer
+        game.max_players = max_players
     db.commit()
     db.refresh(game)
     return game
@@ -888,6 +1098,9 @@ def edit_game(game_id: int, payload: EditIn, db: Session = Depends(get_db)) -> G
     game.title = updated["title"]
     game.description = updated["description"]
     game.code = _sanitize_html(updated["code"])
+    multiplayer, max_players = _infer_multiplayer_meta(game.code)
+    game.multiplayer = multiplayer
+    game.max_players = max_players
     db.commit()
     db.refresh(game)
     return game
@@ -931,6 +1144,9 @@ def rollback_game(game_id: int, version_id: int, db: Session = Depends(get_db)) 
     game.description = version.description
     game.prompt = version.prompt
     game.code = version.code
+    multiplayer, max_players = _infer_multiplayer_meta(game.code)
+    game.multiplayer = multiplayer
+    game.max_players = max_players
     db.commit()
     db.refresh(game)
     return game

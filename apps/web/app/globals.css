@@ -280,3 +280,88 @@ button:disabled {
     gap: 12px;
   }
 }
+
+.party-sidebar {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+.party-toggle {
+  background: #0f172a;
+  color: #d7f0ff;
+  border: 1px solid rgba(120, 160, 255, 0.4);
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.party-panel {
+  width: min(360px, 90vw);
+  max-height: 80vh;
+  overflow: auto;
+  background: #0b1020;
+  border: 1px solid rgba(120, 160, 255, 0.2);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+}
+.party-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.party-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.party-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8ea4d6;
+}
+.party-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.party-list {
+  display: grid;
+  gap: 6px;
+}
+.party-meta {
+  font-size: 12px;
+  color: #9aa7c0;
+}
+.party-pill {
+  background: rgba(20, 34, 60, 0.8);
+  border: 1px solid rgba(120, 160, 255, 0.2);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.party-chat {
+  display: grid;
+  gap: 6px;
+  max-height: 140px;
+  overflow: auto;
+  padding: 6px;
+  background: rgba(10, 16, 32, 0.6);
+  border-radius: 10px;
+}
+.party-game {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: rgba(12, 18, 34, 0.6);
+  border: 1px solid rgba(120, 160, 255, 0.15);
+  padding: 8px;
+  border-radius: 10px;
+}
