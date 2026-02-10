@@ -20,6 +20,8 @@ class GameOut(BaseModel):
     created_at: datetime
     creator_id: int | None = None
     is_public: bool = True
+    play_count: int | None = None
+    likes: int | None = None
 
     class Config:
         from_attributes = True

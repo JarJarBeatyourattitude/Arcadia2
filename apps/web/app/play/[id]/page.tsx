@@ -15,7 +15,7 @@ type Game = {
 
 export default function PlayPage({ params }: { params: { id: string } }) {
   const [game, setGame] = useState<Game | null>(null);
-  const [perfMode, setPerfMode] = useState(false);
+  const [perfMode, setPerfMode] = useState(true);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewKey = useMemo(() => (game ? game.title + game.code.length + String(perfMode) : "empty"), [game, perfMode]);
@@ -26,6 +26,7 @@ export default function PlayPage({ params }: { params: { id: string } }) {
       if (res.ok) {
         const data = await res.json();
         setGame(data);
+        fetch(`${API}/games/${params.id}/play`, { method: "POST" }).catch(() => {});
       }
     }
     load();

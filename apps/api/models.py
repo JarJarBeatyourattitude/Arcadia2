@@ -16,6 +16,7 @@ class Game(Base):
     code = Column(Text, nullable=False)
     creator_id = Column(Integer, nullable=True, index=True)
     is_public = Column(Boolean, nullable=False, default=True)
+    play_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

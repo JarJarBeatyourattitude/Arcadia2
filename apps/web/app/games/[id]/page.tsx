@@ -30,7 +30,7 @@ export default function GamePage({ params }: { params: { id: string } }) {
   const [comments, setComments] = useState<any[]>([]);
   const [votes, setVotes] = useState(0);
   const [me, setMe] = useState<any | null>(null);
-  const [perfMode, setPerfMode] = useState(false);
+  const [perfMode, setPerfMode] = useState(true);
   const isOwner = me && game && me.id === game.creator_id;
 
   function withAIHelper(code: string) {
@@ -357,6 +357,7 @@ window.GameFactoryKit = (function(){
         const data = await res.json();
         setGame(data);
         setManualCode(data.code);
+        fetch(`${API}/games/${params.id}/play`, { method: "POST" }).catch(() => {});
         const meRes = await fetch(`${API}/auth/me`, { credentials: "include" });
         if (meRes.ok) {
           const meData = await meRes.json();
@@ -613,7 +614,10 @@ window.GameFactoryKit = (function(){
               {comments.length === 0 && <div className="card-meta">No comments yet.</div>}
               {comments.map((c) => (
                 <div key={c.id} className="card-meta">
-                  {c.content}
+                  <strong>{c.username || "User"}:</strong> {c.content}
+                  <span style={{ marginLeft: 8, color: "#98a0b5" }}>
+                    {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
+                  </span>
                 </div>
               ))}
             </div>

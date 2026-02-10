@@ -30,11 +30,13 @@ export default function Home() {
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
   const [showCode, setShowCode] = useState(false);
-  const [perfMode, setPerfMode] = useState(false);
+  const [perfMode, setPerfMode] = useState(true);
   const [games, setGames] = useState<Game[]>([]);
   const [myGames, setMyGames] = useState<Game[]>([]);
   const [me, setMe] = useState<any | null>(null);
   const [arcadeTab, setArcadeTab] = useState<"community" | "mine">("community");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"recent" | "top">("recent");
   const [saving, setSaving] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   
@@ -46,7 +48,10 @@ export default function Home() {
   );
 
   async function refreshGames() {
-    const res = await fetch(`${API}/games`);
+    const params = new URLSearchParams();
+    if (search) params.set("q", search);
+    params.set("sort", sort);
+    const res = await fetch(`${API}/games?${params.toString()}`);
     const data = await res.json();
     setGames(data);
   }
@@ -72,7 +77,7 @@ export default function Home() {
     refreshGames().catch(() => {});
     refreshMe().catch(() => {});
     refreshMyGames().catch(() => {});
-  }, []);
+  }, [search, sort]);
 
   useEffect(() => {
     const raw = localStorage.getItem(draftKey);
@@ -686,6 +691,21 @@ window.GameFactoryKit = (function(){
           <button className={arcadeTab === "community" ? "tab active" : "tab"} onClick={() => setArcadeTab("community")}>Community</button>
           <button className={arcadeTab === "mine" ? "tab active" : "tab"} onClick={() => setArcadeTab("mine")}>My Games</button>
         </div>
+        {arcadeTab === "community" && (
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-title">Search & Sort</div>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search games..."
+              style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "#0e1322", color: "#e8eefc" }}
+            />
+            <div className="button-row">
+              <button className={sort === "recent" ? "tab active" : "tab"} onClick={() => setSort("recent")}>Recent</button>
+              <button className={sort === "top" ? "tab active" : "tab"} onClick={() => setSort("top")}>Top</button>
+            </div>
+          </div>
+        )}
         <div className="cards">
           {arcadeTab === "community" && games.length === 0 && <div className="card">No public games yet.</div>}
           {arcadeTab === "mine" && myGames.length === 0 && <div className="card">No saved games yet.</div>}
@@ -696,6 +716,7 @@ window.GameFactoryKit = (function(){
               </div>
               <div className="card-title">{game.title}</div>
               <div className="card-meta">{game.description}</div>
+              <div className="card-meta">❤️ {game.likes ?? 0} • ▶ {game.play_count ?? 0}</div>
             </Link>
           ))}
         </div>

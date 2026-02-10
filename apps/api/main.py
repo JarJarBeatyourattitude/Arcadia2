@@ -12,12 +12,13 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from openrouter import OpenRouter
 from openai import OpenAI
 
 from .db import SessionLocal, init_db
-from passlib.hash import bcrypt
+from passlib.hash import pbkdf2_sha256
 
 from .models import Game, GameVersion, Room, User, Session, GameVote, GameComment
 from .schemas import (
@@ -617,8 +618,30 @@ def create_game(payload: GameCreate, user: User | None = Depends(get_current_use
 
 
 @app.get("/games", response_model=list[GameOut])
-def list_games(db: Session = Depends(get_db)) -> list[GameOut]:
-    return db.query(Game).filter(Game.is_public == True).order_by(Game.created_at.desc()).all()
+def list_games(q: str | None = None, sort: str = "recent", db: Session = Depends(get_db)) -> list[GameOut]:
+    query = db.query(Game).filter(Game.is_public == True)
+    if q:
+        like = f"%{q}%"
+        query = query.filter((Game.title.ilike(like)) | (Game.description.ilike(like)))
+    if sort == "top":
+        vote_counts = (
+            db.query(GameVote.game_id, func.count(GameVote.id).label("votes"))
+            .group_by(GameVote.game_id)
+            .subquery()
+        )
+        query = query.outerjoin(vote_counts, Game.id == vote_counts.c.game_id).order_by(func.coalesce(vote_counts.c.votes, 0).desc(), Game.created_at.desc())
+    else:
+        query = query.order_by(Game.created_at.desc())
+    games = query.all()
+    # attach likes
+    counts = dict(
+        db.query(GameVote.game_id, func.count(GameVote.id))
+        .group_by(GameVote.game_id)
+        .all()
+    )
+    for g in games:
+        setattr(g, "likes", counts.get(g.id, 0))
+    return games
 
 
 @app.get("/games/{game_id}", response_model=GameOut)
@@ -628,6 +651,8 @@ def get_game(game_id: int, user: User | None = Depends(get_current_user), db: Se
         raise HTTPException(status_code=404, detail="Game not found")
     if not game.is_public and (not user or game.creator_id != user.id):
         raise HTTPException(status_code=403, detail="Not allowed")
+    likes = db.query(GameVote).filter(GameVote.game_id == game.id).count()
+    setattr(game, "likes", likes)
     return game
 
 
@@ -710,20 +735,44 @@ def vote_game(game_id: int, user: User | None = Depends(get_current_user), db: S
     return {"voted": True}
 
 
+@app.post("/games/{game_id}/play")
+def track_play(game_id: int, db: Session = Depends(get_db)):
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game.play_count = (game.play_count or 0) + 1
+    db.commit()
+    return {"plays": game.play_count}
+
+
 @app.get("/games/{game_id}/votes")
 def vote_count(game_id: int, db: Session = Depends(get_db)):
     count = db.query(GameVote).filter(GameVote.game_id == game_id).count()
     return {"count": count}
 
 
-@app.get("/games/{game_id}/comments", response_model=list[CommentOut])
-def list_comments(game_id: int, db: Session = Depends(get_db)) -> list[CommentOut]:
-    return (
+@app.get("/games/{game_id}/comments")
+def list_comments(game_id: int, db: Session = Depends(get_db)):
+    comments = (
         db.query(GameComment)
         .filter(GameComment.game_id == game_id)
         .order_by(GameComment.created_at.desc())
         .all()
     )
+    result = []
+    for c in comments:
+        user = db.query(User).filter(User.id == c.user_id).first()
+        result.append(
+            {
+                "id": c.id,
+                "game_id": c.game_id,
+                "user_id": c.user_id,
+                "username": user.username if user else "Unknown",
+                "content": c.content,
+                "created_at": c.created_at,
+            }
+        )
+    return result
 
 
 @app.post("/games/{game_id}/comments", response_model=CommentOut)
@@ -748,7 +797,7 @@ def register(payload: AuthIn, response: Response, db: Session = Depends(get_db))
     user = User(
         email=payload.email,
         username=payload.username,
-        password_hash=bcrypt.hash(payload.password),
+        password_hash=pbkdf2_sha256.hash(payload.password),
     )
     db.add(user)
     db.commit()
@@ -770,7 +819,7 @@ def register(payload: AuthIn, response: Response, db: Session = Depends(get_db))
 @app.post("/auth/login", response_model=UserOut)
 def login(payload: AuthIn, response: Response, db: Session = Depends(get_db)) -> UserOut:
     user = db.query(User).filter(User.email == payload.email).first()
-    if not user or not bcrypt.verify(payload.password, user.password_hash):
+    if not user or not pbkdf2_sha256.verify(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = uuid.uuid4().hex
     db.add(Session(id=token, user_id=user.id))

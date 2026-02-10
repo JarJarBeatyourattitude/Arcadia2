@@ -37,3 +37,7 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE games ADD COLUMN is_public BOOLEAN DEFAULT 1"))
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE games ADD COLUMN play_count INTEGER DEFAULT 0"))
+        except Exception:
+            pass
