@@ -24,16 +24,13 @@ export default function Home() {
   const [progress, setProgress] = useState<string>("");
   const [streaming, setStreaming] = useState(false);
   const [lastCode, setLastCode] = useState<string>("");
+  const [previewErrors, setPreviewErrors] = useState<string[]>([]);
+  const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
+  const [showCode, setShowCode] = useState(false);
   const [games, setGames] = useState<Game[]>([]);
   const [saving, setSaving] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [roomId, setRoomId] = useState("lobby");
-  const [nickname, setNickname] = useState("");
-  const [rooms, setRooms] = useState<{ room_id: string; count: number }[]>([]);
-  const [roomPlayers, setRoomPlayers] = useState<{ id: string; name: string; ready: boolean }[]>([]);
-  const [roomLog, setRoomLog] = useState<string[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const roomSocketRef = useRef<WebSocket | null>(null);
+  
   const previewRef = useRef<HTMLDivElement | null>(null);
 
   const previewKey = useMemo(() => (generated ? generated.title + generated.code.length : "empty"), [generated]);
@@ -46,61 +43,30 @@ export default function Home() {
 
   useEffect(() => {
     refreshGames().catch(() => {});
-    refreshRooms().catch(() => {});
   }, []);
 
-  async function refreshRooms() {
-    const res = await fetch(`${API}/lobby/rooms`);
-    if (!res.ok) return;
-    const data = await res.json();
-    setRooms(data);
-  }
-
-  function connectRoom(id: string) {
-    if (roomSocketRef.current) {
-      roomSocketRef.current.close();
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      const data = event.data;
+      if (data && data.type === "game_error") {
+        setPreviewErrors((prev) => [data.message, ...prev].slice(0, 5));
+      }
     }
-    const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
-    const ws = new WebSocket(`${wsUrl}/ws/${encodeURIComponent(id)}`);
-    roomSocketRef.current = ws;
-    ws.onopen = () => {
-      if (nickname.trim()) {
-        ws.send(JSON.stringify({ type: "set_name", name: nickname.trim() }));
-      }
-      setRoomLog((prev) => [`Joined room ${id}`, ...prev].slice(0, 20));
-    };
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === "room_state") {
-          setRoomPlayers(msg.players || []);
-          return;
-        }
-        if (msg.type === "chat") {
-          setRoomLog((prev) => [`${msg.name || "Player"}: ${msg.text}`, ...prev].slice(0, 20));
-          return;
-        }
-      } catch {
-        setRoomLog((prev) => [String(evt.data), ...prev].slice(0, 20));
-      }
-    };
-    ws.onclose = () => {
-      setRoomPlayers([]);
-    };
-  }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
-  function sendChat() {
-    const ws = roomSocketRef.current;
-    if (!ws || ws.readyState !== 1 || !chatInput.trim()) return;
-    ws.send(JSON.stringify({ type: "chat", name: nickname || "Player", text: chatInput.trim() }));
-    setChatInput("");
-  }
+  useEffect(() => {
+    if (!generated) return;
+    const warnings: string[] = [];
+    if (generated.code.length > 800000) warnings.push("Very large HTML output; preview may be slow.");
+    if (/<script[^>]+src=/i.test(generated.code)) warnings.push("External <script src> was stripped for safety.");
+    if (new RegExp("<link[^>]+href=['\"]https?://", "i").test(generated.code)) {
+      warnings.push("External <link href> was stripped for safety.");
+    }
+    setPreviewWarnings(warnings);
+  }, [generated]);
 
-  function toggleReady(ready: boolean) {
-    const ws = roomSocketRef.current;
-    if (!ws || ws.readyState !== 1) return;
-    ws.send(JSON.stringify({ type: "ready", ready }));
-  }
 
   function withAIHelper(code: string) {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
@@ -369,6 +335,7 @@ window.GameFactoryKit = (function(){
   window.input = window.input || K.input;
   window.storage = window.storage || K.storage;
   window.text = window.text || K.text;
+  window.timers = window.timers || K.timers;
   window.pseudo3d = window.pseudo3d || K.pseudo3d;
   const camState = { shake: null };
   window.camera = window.camera || {
@@ -391,6 +358,12 @@ window.GameFactoryKit = (function(){
     },
     draw: (ctx) => K.particles.draw(ctx),
     prune: () => K.particles.prune()
+  };
+  window.onerror = function(message, source, lineno, colno) {
+    parent.postMessage({ type: "game_error", message: String(message) + " @ " + lineno + ":" + colno }, "*");
+  };
+  window.onunhandledrejection = function(event) {
+    parent.postMessage({ type: "game_error", message: String(event?.reason || "Unhandled rejection") }, "*");
   };
 })();
 </script>
@@ -573,6 +546,17 @@ window.GameFactoryKit = (function(){
               </div>
             </div>
           )}
+          {(previewErrors.length > 0 || previewWarnings.length > 0) && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div className="card-title">Preview Diagnostics</div>
+              {previewWarnings.map((w, i) => (
+                <div key={`w-${i}`} className="card-meta" style={{ color: "#ffd166" }}>{w}</div>
+              ))}
+              {previewErrors.map((e, i) => (
+                <div key={`e-${i}`} className="card-meta" style={{ color: "#ff9b9b" }}>{e}</div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -600,97 +584,22 @@ window.GameFactoryKit = (function(){
         <p style={{ color: "#98a0b5" }}>
           This is the raw HTML/JS the model produced. Useful for debugging whether it used GameFactoryKit.
         </p>
-        <textarea
-          value={lastCode}
-          readOnly
-          style={{ minHeight: 240 }}
-        />
+        <button className="secondary" onClick={() => setShowCode((s) => !s)}>
+          {showCode ? "Hide Code" : "Show Code"}
+        </button>
+        {showCode && (
+          <textarea
+            value={lastCode}
+            readOnly
+            style={{ minHeight: 240, marginTop: 12 }}
+          />
+        )}
+        {lastCode.length > 800000 && (
+          <p style={{ color: "#ffd166" }}>Warning: very large code output. Preview performance may degrade.</p>
+        )}
       </section>
 
-      <section className="section">
-        <h2>Multiplayer Lobby</h2>
-        <p style={{ color: "#98a0b5" }}>
-          Create or join a room. Games can use the room to sync state with other players.
-        </p>
-        <div className="cards">
-          <div className="card">
-            <div className="card-title">Join / Create Room</div>
-            <div className="card-meta">Room Id</div>
-            <input
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-              placeholder="room-id"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "#0e1322", color: "#e8eefc" }}
-            />
-            <div className="card-meta">Nickname</div>
-            <input
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="player name"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "#0e1322", color: "#e8eefc" }}
-            />
-            <div className="button-row" style={{ marginTop: 8 }}>
-              <button onClick={() => connectRoom(roomId)}>Join</button>
-              <button className="secondary" onClick={() => toggleReady(true)}>Ready</button>
-              <button className="secondary" onClick={() => toggleReady(false)}>Unready</button>
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Active Rooms</div>
-            <div className="card-meta">Click to join</div>
-            <div style={{ display: "grid", gap: 8 }}>
-              {rooms.length === 0 && <div className="card-meta">No rooms yet.</div>}
-              {rooms.map((room) => (
-                <button
-                  key={room.room_id}
-                  className="secondary"
-                  onClick={() => {
-                    setRoomId(room.room_id);
-                    connectRoom(room.room_id);
-                  }}
-                >
-                  {room.room_id} ({room.count})
-                </button>
-              ))}
-            </div>
-            <button className="secondary" style={{ marginTop: 10 }} onClick={refreshRooms}>
-              Refresh
-            </button>
-          </div>
-          <div className="card">
-            <div className="card-title">Players</div>
-            <div className="card-meta">
-              {roomPlayers.length === 0 ? "No one connected." : "Room roster"}
-            </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {roomPlayers.map((p) => (
-                <div key={p.id} className="card-meta">
-                  {p.name} {p.ready ? "✅" : "⏳"}
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="chat..."
-                style={{ padding: 10, borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)", background: "#0e1322", color: "#e8eefc" }}
-              />
-              <button onClick={sendChat}>Send</button>
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Room Log</div>
-            <div className="card-meta">Latest events</div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {roomLog.length === 0 && <div className="card-meta">No activity yet.</div>}
-              {roomLog.map((line, idx) => (
-                <div key={idx} className="card-meta">{line}</div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
+      
     </main>
   );
 }

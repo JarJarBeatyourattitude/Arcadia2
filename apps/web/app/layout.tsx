@@ -15,8 +15,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <div className="logo">Game Factory</div>
             <nav className="top-nav">
               <a href="/">Create</a>
-              <a href="/">Play</a>
-              <a href="/">Share</a>
+              <a href="/lobby">Lobby</a>
+              <a href="/toolkit">Toolkit</a>
             </nav>
           </header>
           {children}

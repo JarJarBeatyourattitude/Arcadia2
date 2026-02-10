@@ -24,6 +24,8 @@ export default function GamePage({ params }: { params: { id: string } }) {
   const [versions, setVersions] = useState<Game[]>([]);
   const [showAllVersions, setShowAllVersions] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<any | null>(null);
+  const [manualCode, setManualCode] = useState("");
+  const [previewErrors, setPreviewErrors] = useState<string[]>([]);
 
   function withAIHelper(code: string) {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
@@ -292,6 +294,7 @@ window.GameFactoryKit = (function(){
   window.input = window.input || K.input;
   window.storage = window.storage || K.storage;
   window.text = window.text || K.text;
+  window.timers = window.timers || K.timers;
   window.pseudo3d = window.pseudo3d || K.pseudo3d;
   const camState = { shake: null };
   window.camera = window.camera || {
@@ -315,6 +318,12 @@ window.GameFactoryKit = (function(){
     draw: (ctx) => K.particles.draw(ctx),
     prune: () => K.particles.prune()
   };
+  window.onerror = function(message, source, lineno, colno) {
+    parent.postMessage({ type: "game_error", message: String(message) + " @ " + lineno + ":" + colno }, "*");
+  };
+  window.onunhandledrejection = function(event) {
+    parent.postMessage({ type: "game_error", message: String(event?.reason || "Unhandled rejection") }, "*");
+  };
 })();
 </script>
 `;
@@ -330,6 +339,7 @@ window.GameFactoryKit = (function(){
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         setGame(data);
+        setManualCode(data.code);
         const ver = await fetch(`${API}/games/${params.id}/versions`);
         if (ver.ok) {
           const vdata = await ver.json();
@@ -341,6 +351,21 @@ window.GameFactoryKit = (function(){
     }
     load();
   }, [params.id]);
+
+  useEffect(() => {
+    if (game) setManualCode(game.code);
+  }, [game?.code, game?.id]);
+
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      const data = event.data;
+      if (data && data.type === "game_error") {
+        setPreviewErrors((prev) => [data.message, ...prev].slice(0, 5));
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   const groupedVersions = useMemo(() => {
     function hash(str: string) {
@@ -427,6 +452,31 @@ window.GameFactoryKit = (function(){
     }
   }
 
+  async function saveManual() {
+    if (!game) return;
+    setEditing(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/games/${game.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: manualCode })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setGame(data);
+      const ver = await fetch(`${API}/games/${params.id}/versions`);
+      if (ver.ok) {
+        const vdata = await ver.json();
+        setVersions(vdata);
+      }
+    } catch (err: any) {
+      setError(err.message || "Manual save failed");
+    } finally {
+      setEditing(false);
+    }
+  }
+
   return (
     <main className="section">
       <Link href="/" className="badge">Back</Link>
@@ -443,6 +493,14 @@ window.GameFactoryKit = (function(){
           <div className="preview" ref={previewRef} onClick={focusPreview}>
             <iframe ref={iframeRef} srcDoc={withAIHelper(game.code)} sandbox="allow-scripts" />
           </div>
+          {previewErrors.length > 0 && (
+            <div className="card">
+              <div className="card-title">Preview Errors</div>
+              {previewErrors.map((e, i) => (
+                <div key={i} className="card-meta" style={{ color: "#ff9b9b" }}>{e}</div>
+              ))}
+            </div>
+          )}
           <div className="card">
             <div className="card-title">Prompt</div>
             <div className="card-meta">{game.prompt}</div>
@@ -459,6 +517,20 @@ window.GameFactoryKit = (function(){
             <div className="button-row">
               <button onClick={submitEdit} disabled={editing}>
                 {editing ? "Editing..." : "Apply Edit"}
+              </button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Manual Code Edit</div>
+            <div className="card-meta">Edit HTML directly and save.</div>
+            <textarea
+              value={manualCode}
+              onChange={(e) => setManualCode(e.target.value)}
+              style={{ minHeight: 220 }}
+            />
+            <div className="button-row">
+              <button onClick={saveManual} disabled={editing}>
+                {editing ? "Saving..." : "Save Code"}
               </button>
             </div>
           </div>

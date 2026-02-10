@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -16,8 +17,8 @@ from openrouter import OpenRouter
 from openai import OpenAI
 
 from .db import SessionLocal, init_db
-from .models import Game, GameVersion
-from .schemas import AiIn, AiOut, EditIn, GameCreate, GameOut, GameVersionOut, GenerateIn, GenerateOut
+from .models import Game, GameVersion, Room
+from .schemas import AiIn, AiOut, EditIn, GameCreate, GameOut, GameUpdate, GameVersionOut, GenerateIn, GenerateOut
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV)
@@ -61,6 +62,14 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
         return json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError:
         return None
+
+
+def _sanitize_html(code: str) -> str:
+    # Strip external scripts/links to keep games self-contained.
+    sanitized = code
+    sanitized = re.sub(r"<script[^>]+src=['\"][^'\"]+['\"][^>]*>\\s*</script>", "", sanitized, flags=re.I)
+    sanitized = re.sub(r"<link[^>]+href=['\"]https?://[^'\"]+['\"][^>]*>", "", sanitized, flags=re.I)
+    return sanitized
 
 
 def _fallback_game(prompt: str) -> Dict[str, str]:
@@ -243,7 +252,7 @@ def _generate_game(prompt: str) -> Dict[str, str]:
 
     title = str(payload.get("title") or "Untitled Game")
     description = str(payload.get("description") or "")
-    code = str(payload.get("code") or "")
+    code = _sanitize_html(str(payload.get("code") or ""))
     if "<html" not in code.lower():
         return _fallback_game(prompt)
 
@@ -294,7 +303,7 @@ def _edit_game(current_code: str, instruction: str, original_prompt: str | None 
         raise ValueError("Failed to parse edit JSON")
     title = str(payload.get("title") or "Untitled Game")
     description = str(payload.get("description") or "")
-    code = str(payload.get("code") or "")
+    code = _sanitize_html(str(payload.get("code") or ""))
     if "<html" not in code.lower():
         raise ValueError("Edited code missing HTML document")
     return {"title": title, "description": description, "code": code}
@@ -448,6 +457,7 @@ class ConnectionManager:
             "ready": False,
             "room": room,
         }
+        _upsert_room(room, len(self.rooms.get(room, [])))
 
     def disconnect(self, room: str, websocket: WebSocket) -> None:
         if room in self.rooms:
@@ -455,6 +465,7 @@ class ConnectionManager:
             if not self.rooms[room]:
                 self.rooms.pop(room, None)
         self.players.pop(websocket, None)
+        _upsert_room(room, len(self.rooms.get(room, [])))
 
     async def broadcast(self, room: str, message: str) -> None:
         for ws in list(self.rooms.get(room, [])):
@@ -472,6 +483,20 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def _upsert_room(room_id: str, count: int) -> None:
+    db = SessionLocal()
+    try:
+        room = db.query(Room).filter(Room.id == room_id).first()
+        if not room:
+            room = Room(id=room_id, count=count)
+            db.add(room)
+        else:
+            room.count = count
+        db.commit()
+    finally:
+        db.close()
 
 
 @app.websocket("/ws/{room_id}")
@@ -528,16 +553,22 @@ async def ws_room(websocket: WebSocket, room_id: str):
 
 @app.get("/lobby/rooms")
 def lobby_rooms():
-    rooms = []
-    for room_id, sockets in manager.rooms.items():
-        rooms.append({"room_id": room_id, "count": len(sockets)})
-    rooms.sort(key=lambda r: r["count"], reverse=True)
-    return rooms
+    db = SessionLocal()
+    try:
+        rooms = []
+        for r in db.query(Room).all():
+            rooms.append({"room_id": r.id, "count": r.count})
+        rooms.sort(key=lambda r: r["count"], reverse=True)
+        return rooms
+    finally:
+        db.close()
 
 
 @app.post("/games", response_model=GameOut)
 def create_game(payload: GameCreate, db: Session = Depends(get_db)) -> GameOut:
-    game = Game(**payload.dict())
+    data = payload.dict()
+    data["code"] = _sanitize_html(data["code"])
+    game = Game(**data)
     db.add(game)
     db.commit()
     db.refresh(game)
@@ -564,6 +595,37 @@ def get_game(game_id: int, db: Session = Depends(get_db)) -> GameOut:
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+    return game
+
+
+@app.put("/games/{game_id}", response_model=GameOut)
+def update_game(game_id: int, payload: GameUpdate, db: Session = Depends(get_db)) -> GameOut:
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Save current version before manual update
+    version = GameVersion(
+        game_id=game.id,
+        title=game.title,
+        description=game.description,
+        prompt=game.prompt,
+        code=game.code,
+        action="manual",
+    )
+    db.add(version)
+    db.commit()
+
+    if payload.title is not None:
+        game.title = payload.title
+    if payload.description is not None:
+        game.description = payload.description
+    if payload.prompt is not None:
+        game.prompt = payload.prompt
+    if payload.code is not None:
+        game.code = _sanitize_html(payload.code)
+    db.commit()
+    db.refresh(game)
     return game
 
 
@@ -602,7 +664,7 @@ def edit_game(game_id: int, payload: EditIn, db: Session = Depends(get_db)) -> G
 
     game.title = updated["title"]
     game.description = updated["description"]
-    game.code = updated["code"]
+    game.code = _sanitize_html(updated["code"])
     db.commit()
     db.refresh(game)
     return game

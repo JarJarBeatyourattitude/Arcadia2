@@ -51,6 +51,13 @@ class EditIn(BaseModel):
     instruction: str = Field(min_length=1)
 
 
+class GameUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    prompt: str | None = None
+    code: str | None = None
+
+
 class AiIn(BaseModel):
     prompt: str = Field(min_length=1)
     system: str | None = None

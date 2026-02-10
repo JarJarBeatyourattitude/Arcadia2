@@ -25,3 +25,7 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE game_versions ADD COLUMN action VARCHAR(50)"))
         except Exception:
             pass
+        try:
+            conn.execute(text("CREATE TABLE IF NOT EXISTS rooms (id VARCHAR(120) PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)"))
+        except Exception:
+            pass

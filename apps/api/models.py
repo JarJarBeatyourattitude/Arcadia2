@@ -28,3 +28,11 @@ class GameVersion(Base):
     code = Column(Text, nullable=False)
     action = Column(String(50), nullable=False, default="edit")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Room(Base):
+    __tablename__ = "rooms"
+
+    id = Column(String(120), primary_key=True, index=True)
+    count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
