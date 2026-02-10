@@ -26,11 +26,27 @@ export default function GamePage({ params }: { params: { id: string } }) {
   const [selectedVersion, setSelectedVersion] = useState<any | null>(null);
   const [manualCode, setManualCode] = useState("");
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
+  const [comment, setComment] = useState("");
+  const [comments, setComments] = useState<any[]>([]);
+  const [votes, setVotes] = useState(0);
+  const [me, setMe] = useState<any | null>(null);
+  const [perfMode, setPerfMode] = useState(false);
+  const isOwner = me && game && me.id === game.creator_id;
 
   function withAIHelper(code: string) {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
     const helper = `
 <script>
+(() => {
+  const perf = ${perfMode ? "true" : "false"};
+  window.__GF_PERF_MODE = perf;
+  if (perf) {
+    const dpr = window.devicePixelRatio || 1;
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { get: () => Math.min(1, dpr), configurable: true });
+    } catch {}
+  }
+})();
 window.GameFactoryAI = async function(prompt, system, timeoutMs=8000){
   const controller = new AbortController();
   const timer = setTimeout(()=>controller.abort(), timeoutMs);
@@ -295,6 +311,7 @@ window.GameFactoryKit = (function(){
   window.storage = window.storage || K.storage;
   window.text = window.text || K.text;
   window.timers = window.timers || K.timers;
+  window.circle = window.circle || ((a,b)=>K.physics2d.circle(a,b));
   window.pseudo3d = window.pseudo3d || K.pseudo3d;
   const camState = { shake: null };
   window.camera = window.camera || {
@@ -335,11 +352,26 @@ window.GameFactoryKit = (function(){
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch(`${API}/games/${params.id}`);
+        const res = await fetch(`${API}/games/${params.id}`, { credentials: "include" });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         setGame(data);
         setManualCode(data.code);
+        const meRes = await fetch(`${API}/auth/me`, { credentials: "include" });
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          setMe(meData);
+        }
+        const voteRes = await fetch(`${API}/games/${params.id}/votes`);
+        if (voteRes.ok) {
+          const vdata = await voteRes.json();
+          setVotes(vdata.count || 0);
+        }
+        const commentRes = await fetch(`${API}/games/${params.id}/comments`);
+        if (commentRes.ok) {
+          const cdata = await commentRes.json();
+          setComments(cdata);
+        }
         const ver = await fetch(`${API}/games/${params.id}/versions`);
         if (ver.ok) {
           const vdata = await ver.json();
@@ -477,6 +509,36 @@ window.GameFactoryKit = (function(){
     }
   }
 
+  async function submitComment() {
+    if (!comment.trim() || !game) return;
+    const res = await fetch(`${API}/games/${game.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ content: comment })
+    });
+    if (res.ok) {
+      const c = await res.json();
+      setComments((prev) => [c, ...prev]);
+      setComment("");
+    }
+  }
+
+  async function toggleVote() {
+    if (!game) return;
+    const res = await fetch(`${API}/games/${game.id}/vote`, {
+      method: "POST",
+      credentials: "include"
+    });
+    if (res.ok) {
+      const v = await fetch(`${API}/games/${game.id}/votes`);
+      if (v.ok) {
+        const vdata = await v.json();
+        setVotes(vdata.count || 0);
+      }
+    }
+  }
+
   return (
     <main className="section">
       <Link href="/" className="badge">Back</Link>
@@ -488,7 +550,12 @@ window.GameFactoryKit = (function(){
           <p style={{ color: "#98a0b5" }}>{game.description}</p>
           <div className="preview-header">
             <div className="card-title">Play</div>
-            <button className="secondary" onClick={openFullscreen}>Fullscreen</button>
+            <div className="button-row">
+              <button className="secondary" onClick={() => setPerfMode((v) => !v)}>
+                {perfMode ? "Perf Mode: On" : "Perf Mode: Off"}
+              </button>
+              <button className="secondary" onClick={openFullscreen}>Fullscreen</button>
+            </div>
           </div>
           <div className="preview" ref={previewRef} onClick={focusPreview}>
             <iframe ref={iframeRef} srcDoc={withAIHelper(game.code)} sandbox="allow-scripts" />
@@ -506,70 +573,105 @@ window.GameFactoryKit = (function(){
             <div className="card-meta">{game.prompt}</div>
           </div>
           <div className="card">
-            <div className="card-title">Edit With AI</div>
-            <div className="card-meta">Describe the change you want.</div>
+            <div className="card-title">Share</div>
+            <div className="card-meta">Public link</div>
+            <code>{typeof window !== "undefined" ? `${window.location.origin}/play/${game.id}` : `/play/${game.id}`}</code>
+          </div>
+          {isOwner && (
+            <div className="card">
+              <div className="card-title">Edit With AI</div>
+              <div className="card-meta">Describe the change you want.</div>
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                placeholder="Add a timer, new obstacles, change art style..."
+                style={{ minHeight: 120 }}
+              />
+              <div className="button-row">
+                <button onClick={submitEdit} disabled={editing}>
+                  {editing ? "Editing..." : "Apply Edit"}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="card">
+            <div className="card-title">Community</div>
+            <div className="button-row">
+              <button className="secondary" onClick={toggleVote}>Upvote</button>
+              <div className="card-meta">Votes: {votes}</div>
+            </div>
             <textarea
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              placeholder="Add a timer, new obstacles, change art style..."
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Write a comment..."
               style={{ minHeight: 120 }}
             />
             <div className="button-row">
-              <button onClick={submitEdit} disabled={editing}>
-                {editing ? "Editing..." : "Apply Edit"}
-              </button>
+              <button onClick={submitComment}>Post Comment</button>
             </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Manual Code Edit</div>
-            <div className="card-meta">Edit HTML directly and save.</div>
-            <textarea
-              value={manualCode}
-              onChange={(e) => setManualCode(e.target.value)}
-              style={{ minHeight: 220 }}
-            />
-            <div className="button-row">
-              <button onClick={saveManual} disabled={editing}>
-                {editing ? "Saving..." : "Save Code"}
-              </button>
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Version History</div>
-            <div className="card-meta">Rollback to a previous version.</div>
-            <div style={{ display: "grid", gap: 8 }}>
-              {versions.length === 0 && <div className="card-meta">No versions yet.</div>}
-              {(showAllVersions ? groupedVersions : groupedVersions.slice(0, 6)).map((entry: any) => (
-                <div key={entry.v.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <button
-                    className="secondary"
-                    onClick={() => rollback(entry.v.id)}
-                    disabled={editing}
-                    style={{ flex: 1 }}
-                  >
-                    {new Date(entry.v.created_at).toLocaleString()} — {entry.v.title} [{entry.v.action || "edit"}]
-                    {entry.count > 1 ? ` (x${entry.count})` : ""}
-                  </button>
-                  <button
-                    className="secondary"
-                    onClick={() => setSelectedVersion(entry.v)}
-                    disabled={editing}
-                  >
-                    Compare
-                  </button>
+            <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+              {comments.length === 0 && <div className="card-meta">No comments yet.</div>}
+              {comments.map((c) => (
+                <div key={c.id} className="card-meta">
+                  {c.content}
                 </div>
               ))}
             </div>
-            {groupedVersions.length > 6 && (
-              <button
-                className="secondary"
-                style={{ marginTop: 8 }}
-                onClick={() => setShowAllVersions((s) => !s)}
-              >
-                {showAllVersions ? "Show Less" : "Show All"}
-              </button>
-            )}
           </div>
+          {isOwner && (
+            <>
+              <div className="card">
+                <div className="card-title">Manual Code Edit</div>
+                <div className="card-meta">Edit HTML directly and save.</div>
+                <textarea
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value)}
+                  style={{ minHeight: 220 }}
+                />
+                <div className="button-row">
+                  <button onClick={saveManual} disabled={editing}>
+                    {editing ? "Saving..." : "Save Code"}
+                  </button>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-title">Version History</div>
+                <div className="card-meta">Rollback to a previous version.</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {versions.length === 0 && <div className="card-meta">No versions yet.</div>}
+                  {(showAllVersions ? groupedVersions : groupedVersions.slice(0, 6)).map((entry: any) => (
+                    <div key={entry.v.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <button
+                        className="secondary"
+                        onClick={() => rollback(entry.v.id)}
+                        disabled={editing}
+                        style={{ flex: 1 }}
+                      >
+                        {new Date(entry.v.created_at).toLocaleString()} — {entry.v.title} [{entry.v.action || "edit"}]
+                        {entry.count > 1 ? ` (x${entry.count})` : ""}
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => setSelectedVersion(entry.v)}
+                        disabled={editing}
+                      >
+                        Compare
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {groupedVersions.length > 6 && (
+                  <button
+                    className="secondary"
+                    style={{ marginTop: 8 }}
+                    onClick={() => setShowAllVersions((s) => !s)}
+                  >
+                    {showAllVersions ? "Show Less" : "Show All"}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
           {selectedVersion && (
             <div className="card">
               <div className="card-title">Compare Versions</div>

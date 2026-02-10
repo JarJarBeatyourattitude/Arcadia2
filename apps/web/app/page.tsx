@@ -24,16 +24,26 @@ export default function Home() {
   const [progress, setProgress] = useState<string>("");
   const [streaming, setStreaming] = useState(false);
   const [lastCode, setLastCode] = useState<string>("");
+  const [editInstruction, setEditInstruction] = useState("");
+  const [editingPreview, setEditingPreview] = useState(false);
+  const draftKey = "gf_draft_game";
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
   const [showCode, setShowCode] = useState(false);
+  const [perfMode, setPerfMode] = useState(false);
   const [games, setGames] = useState<Game[]>([]);
+  const [myGames, setMyGames] = useState<Game[]>([]);
+  const [me, setMe] = useState<any | null>(null);
+  const [arcadeTab, setArcadeTab] = useState<"community" | "mine">("community");
   const [saving, setSaving] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   
   const previewRef = useRef<HTMLDivElement | null>(null);
 
-  const previewKey = useMemo(() => (generated ? generated.title + generated.code.length : "empty"), [generated]);
+  const previewKey = useMemo(
+    () => (generated ? generated.title + generated.code.length + String(perfMode) : "empty"),
+    [generated, perfMode]
+  );
 
   async function refreshGames() {
     const res = await fetch(`${API}/games`);
@@ -41,9 +51,52 @@ export default function Home() {
     setGames(data);
   }
 
+  async function refreshMe() {
+    const res = await fetch(`${API}/auth/me`, { credentials: "include" });
+    if (res.ok) {
+      const data = await res.json();
+      setMe(data);
+    } else {
+      setMe(null);
+    }
+  }
+
+  async function refreshMyGames() {
+    const res = await fetch(`${API}/games/mine`, { credentials: "include" });
+    if (!res.ok) return;
+    const data = await res.json();
+    setMyGames(data);
+  }
+
   useEffect(() => {
     refreshGames().catch(() => {});
+    refreshMe().catch(() => {});
+    refreshMyGames().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(draftKey);
+    if (!raw) return;
+    try {
+      const draft = JSON.parse(raw);
+      if (draft?.code) {
+        setGenerated({ title: draft.title || "Draft", description: draft.description || "", code: draft.code });
+        setLastCode(draft.code);
+      }
+      if (draft?.prompt) setPrompt(draft.prompt);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!generated) return;
+    const payload = {
+      title: generated.title,
+      description: generated.description,
+      code: generated.code,
+      prompt
+    };
+    localStorage.setItem(draftKey, JSON.stringify(payload));
+  }, [generated, prompt]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -72,6 +125,16 @@ export default function Home() {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
     const helper = `
 <script>
+(() => {
+  const perf = ${perfMode ? "true" : "false"};
+  window.__GF_PERF_MODE = perf;
+  if (perf) {
+    const dpr = window.devicePixelRatio || 1;
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { get: () => Math.min(1, dpr), configurable: true });
+    } catch {}
+  }
+})();
 window.GameFactoryAI = async function(prompt, system, timeoutMs=8000){
   const controller = new AbortController();
   const timer = setTimeout(()=>controller.abort(), timeoutMs);
@@ -336,6 +399,7 @@ window.GameFactoryKit = (function(){
   window.storage = window.storage || K.storage;
   window.text = window.text || K.text;
   window.timers = window.timers || K.timers;
+  window.circle = window.circle || ((a,b)=>K.physics2d.circle(a,b));
   window.pseudo3d = window.pseudo3d || K.pseudo3d;
   const camState = { shake: null };
   window.camera = window.camera || {
@@ -463,9 +527,13 @@ window.GameFactoryKit = (function(){
     setSaving(true);
     setError(null);
     try {
+      if (!me) {
+        throw new Error("Please log in to save games.");
+      }
       const res = await fetch(`${API}/games`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           title: generated.title,
           description: generated.description,
@@ -477,10 +545,38 @@ window.GameFactoryKit = (function(){
         throw new Error(await res.text());
       }
       await refreshGames();
+      await refreshMyGames();
+      localStorage.removeItem(draftKey);
     } catch (err: any) {
       setError(err.message || "Failed to save game");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function editPreview() {
+    if (!generated || !editInstruction.trim()) return;
+    setEditingPreview(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/edit-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: editInstruction,
+          code: generated.code
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setGenerated(data);
+      localStorage.setItem(draftKey, JSON.stringify({ ...data, prompt }));
+      setLastCode(data.code || "");
+      setEditInstruction("");
+    } catch (err: any) {
+      setError(err.message || "Edit failed");
+    } finally {
+      setEditingPreview(false);
     }
   }
 
@@ -522,7 +618,12 @@ window.GameFactoryKit = (function(){
         <div className="hero-card">
           <div className="preview-header">
             <div className="card-title">Live Preview</div>
-            <button className="secondary" onClick={openFullscreen}>Fullscreen</button>
+            <div className="button-row">
+              <button className="secondary" onClick={() => setPerfMode((v) => !v)}>
+                {perfMode ? "Perf Mode: On" : "Perf Mode: Off"}
+              </button>
+              <button className="secondary" onClick={openFullscreen}>Fullscreen</button>
+            </div>
           </div>
           <div className="preview" ref={previewRef} onClick={focusPreview}>
             {generated ? (
@@ -534,18 +635,34 @@ window.GameFactoryKit = (function(){
               />
             ) : (
               <div style={{ padding: 24, color: "#98a0b5" }}>
-                {streaming ? "Streaming game build..." : "Generate a game to see it here."}
+                Generate a game to see it here.
+              </div>
+            )}
+            {streaming && (
+              <div className="preview-log">
+                <div className="card-title">Live Build Log</div>
+                <div className="card-meta" style={{ whiteSpace: "pre-wrap" }}>
+                  {progress.slice(-2000) || "Building..."}
+                </div>
               </div>
             )}
           </div>
-          {streaming && (
-            <div className="card" style={{ marginTop: 16 }}>
-              <div className="card-title">Live Build Log</div>
-              <div className="card-meta" style={{ whiteSpace: "pre-wrap" }}>
-                {progress.slice(-1200)}
-              </div>
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-title">Edit Preview</div>
+            <div className="card-meta">Describe a change and apply it to the current preview.</div>
+            <textarea
+              value={editInstruction}
+              onChange={(e) => setEditInstruction(e.target.value)}
+              placeholder="Make the player faster, add a timer, change visuals..."
+              style={{ minHeight: 100 }}
+            />
+            <div className="button-row">
+              <button onClick={editPreview} disabled={!generated || editingPreview}>
+                {editingPreview ? "Editing..." : "Apply Edit"}
+              </button>
             </div>
-          )}
+          </div>
+          
           {(previewErrors.length > 0 || previewWarnings.length > 0) && (
             <div className="card" style={{ marginTop: 12 }}>
               <div className="card-title">Preview Diagnostics</div>
@@ -565,9 +682,14 @@ window.GameFactoryKit = (function(){
         <p style={{ color: "#98a0b5" }}>
           These games are stored in your local SQLite database and ready to play.
         </p>
+        <div className="tab-row">
+          <button className={arcadeTab === "community" ? "tab active" : "tab"} onClick={() => setArcadeTab("community")}>Community</button>
+          <button className={arcadeTab === "mine" ? "tab active" : "tab"} onClick={() => setArcadeTab("mine")}>My Games</button>
+        </div>
         <div className="cards">
-          {games.length === 0 && <div className="card">No saved games yet.</div>}
-          {games.map((game) => (
+          {arcadeTab === "community" && games.length === 0 && <div className="card">No public games yet.</div>}
+          {arcadeTab === "mine" && myGames.length === 0 && <div className="card">No saved games yet.</div>}
+          {(arcadeTab === "community" ? games : myGames).map((game) => (
             <Link href={`/games/${game.id}`} key={game.id} className="card">
               <div className="card-preview">
                 <iframe srcDoc={withAIHelper(game.code)} sandbox="allow-scripts" />

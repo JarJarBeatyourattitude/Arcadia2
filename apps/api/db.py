@@ -29,3 +29,11 @@ def init_db() -> None:
             conn.execute(text("CREATE TABLE IF NOT EXISTS rooms (id VARCHAR(120) PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)"))
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE games ADD COLUMN creator_id INTEGER"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE games ADD COLUMN is_public BOOLEAN DEFAULT 1"))
+        except Exception:
+            pass

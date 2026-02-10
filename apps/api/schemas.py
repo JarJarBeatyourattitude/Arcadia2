@@ -18,6 +18,8 @@ class GameOut(BaseModel):
     prompt: str
     code: str
     created_at: datetime
+    creator_id: int | None = None
+    is_public: bool = True
 
     class Config:
         from_attributes = True
@@ -51,11 +53,43 @@ class EditIn(BaseModel):
     instruction: str = Field(min_length=1)
 
 
+class EditPreviewIn(BaseModel):
+    instruction: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+
+
 class GameUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     prompt: str | None = None
     code: str | None = None
+
+
+class AuthIn(BaseModel):
+    email: str
+    username: str | None = None
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    username: str
+
+    class Config:
+        from_attributes = True
+
+
+class CommentIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class CommentOut(BaseModel):
+    id: int
+    game_id: int
+    user_id: int
+    content: str
+    created_at: datetime
 
 
 class AiIn(BaseModel):

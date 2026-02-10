@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 import uuid
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -17,8 +17,25 @@ from openrouter import OpenRouter
 from openai import OpenAI
 
 from .db import SessionLocal, init_db
-from .models import Game, GameVersion, Room
-from .schemas import AiIn, AiOut, EditIn, GameCreate, GameOut, GameUpdate, GameVersionOut, GenerateIn, GenerateOut
+from passlib.hash import bcrypt
+
+from .models import Game, GameVersion, Room, User, Session, GameVote, GameComment
+from .schemas import (
+    AiIn,
+    AiOut,
+    AuthIn,
+    CommentIn,
+    CommentOut,
+    EditPreviewIn,
+    EditIn,
+    GameCreate,
+    GameOut,
+    GameUpdate,
+    GameVersionOut,
+    GenerateIn,
+    GenerateOut,
+    UserOut,
+)
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV)
@@ -31,7 +48,7 @@ allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -48,6 +65,16 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+    token = request.cookies.get("session_token")
+    if not token:
+        return None
+    sess = db.query(Session).filter(Session.id == token).first()
+    if not sess:
+        return None
+    return db.query(User).filter(User.id == sess.user_id).first()
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -565,10 +592,14 @@ def lobby_rooms():
 
 
 @app.post("/games", response_model=GameOut)
-def create_game(payload: GameCreate, db: Session = Depends(get_db)) -> GameOut:
+def create_game(payload: GameCreate, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> GameOut:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
     data = payload.dict()
     data["code"] = _sanitize_html(data["code"])
     game = Game(**data)
+    if user:
+        game.creator_id = user.id
     db.add(game)
     db.commit()
     db.refresh(game)
@@ -587,15 +618,24 @@ def create_game(payload: GameCreate, db: Session = Depends(get_db)) -> GameOut:
 
 @app.get("/games", response_model=list[GameOut])
 def list_games(db: Session = Depends(get_db)) -> list[GameOut]:
-    return db.query(Game).order_by(Game.created_at.desc()).all()
+    return db.query(Game).filter(Game.is_public == True).order_by(Game.created_at.desc()).all()
 
 
 @app.get("/games/{game_id}", response_model=GameOut)
-def get_game(game_id: int, db: Session = Depends(get_db)) -> GameOut:
+def get_game(game_id: int, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> GameOut:
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+    if not game.is_public and (not user or game.creator_id != user.id):
+        raise HTTPException(status_code=403, detail="Not allowed")
     return game
+
+
+@app.get("/games/mine", response_model=list[GameOut])
+def my_games(user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> list[GameOut]:
+    if not user:
+        return []
+    return db.query(Game).filter(Game.creator_id == user.id).order_by(Game.created_at.desc()).all()
 
 
 @app.put("/games/{game_id}", response_model=GameOut)
@@ -627,6 +667,140 @@ def update_game(game_id: int, payload: GameUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(game)
     return game
+
+
+@app.post("/games/{game_id}/publish", response_model=GameOut)
+def publish_game(game_id: int, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> GameOut:
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if not user or game.creator_id != user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    game.is_public = True
+    db.commit()
+    db.refresh(game)
+    return game
+
+
+@app.post("/games/{game_id}/unpublish", response_model=GameOut)
+def unpublish_game(game_id: int, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> GameOut:
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if not user or game.creator_id != user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    game.is_public = False
+    db.commit()
+    db.refresh(game)
+    return game
+
+
+@app.post("/games/{game_id}/vote")
+def vote_game(game_id: int, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    vote = db.query(GameVote).filter(GameVote.game_id == game_id, GameVote.user_id == user.id).first()
+    if vote:
+        db.delete(vote)
+        db.commit()
+        return {"voted": False}
+    vote = GameVote(game_id=game_id, user_id=user.id)
+    db.add(vote)
+    db.commit()
+    return {"voted": True}
+
+
+@app.get("/games/{game_id}/votes")
+def vote_count(game_id: int, db: Session = Depends(get_db)):
+    count = db.query(GameVote).filter(GameVote.game_id == game_id).count()
+    return {"count": count}
+
+
+@app.get("/games/{game_id}/comments", response_model=list[CommentOut])
+def list_comments(game_id: int, db: Session = Depends(get_db)) -> list[CommentOut]:
+    return (
+        db.query(GameComment)
+        .filter(GameComment.game_id == game_id)
+        .order_by(GameComment.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/games/{game_id}/comments", response_model=CommentOut)
+def create_comment(game_id: int, payload: CommentIn, user: User | None = Depends(get_current_user), db: Session = Depends(get_db)) -> CommentOut:
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    comment = GameComment(game_id=game_id, user_id=user.id, content=payload.content)
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+
+@app.post("/auth/register", response_model=UserOut)
+def register(payload: AuthIn, response: Response, db: Session = Depends(get_db)) -> UserOut:
+    if not payload.username:
+        raise HTTPException(status_code=400, detail="Username required")
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Email already in use")
+    if db.query(User).filter(User.username == payload.username).first():
+        raise HTTPException(status_code=400, detail="Username already in use")
+    user = User(
+        email=payload.email,
+        username=payload.username,
+        password_hash=bcrypt.hash(payload.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = uuid.uuid4().hex
+    db.add(Session(id=token, user_id=user.id))
+    db.commit()
+    secure_cookie = bool(os.getenv("COOKIE_SECURE"))
+    response.set_cookie(
+        "session_token",
+        token,
+        httponly=True,
+        samesite="none" if secure_cookie else "lax",
+        secure=secure_cookie,
+    )
+    return user
+
+
+@app.post("/auth/login", response_model=UserOut)
+def login(payload: AuthIn, response: Response, db: Session = Depends(get_db)) -> UserOut:
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not bcrypt.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = uuid.uuid4().hex
+    db.add(Session(id=token, user_id=user.id))
+    db.commit()
+    secure_cookie = bool(os.getenv("COOKIE_SECURE"))
+    response.set_cookie(
+        "session_token",
+        token,
+        httponly=True,
+        samesite="none" if secure_cookie else "lax",
+        secure=secure_cookie,
+    )
+    return user
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get("session_token")
+    if token:
+        sess = db.query(Session).filter(Session.id == token).first()
+        if sess:
+            db.delete(sess)
+            db.commit()
+    response.delete_cookie("session_token")
+    return {"ok": True}
+
+
+@app.get("/auth/me", response_model=UserOut | None)
+def me(user: User | None = Depends(get_current_user)) -> UserOut | None:
+    return user
 
 
 @app.get("/games/{game_id}/versions", response_model=list[GameVersionOut])
@@ -668,6 +842,15 @@ def edit_game(game_id: int, payload: EditIn, db: Session = Depends(get_db)) -> G
     db.commit()
     db.refresh(game)
     return game
+
+
+@app.post("/edit-preview", response_model=GenerateOut)
+def edit_preview(payload: EditPreviewIn):
+    try:
+        updated = _edit_game(payload.code, payload.instruction, None)
+        return GenerateOut(**updated)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/games/{game_id}/rollback/{version_id}", response_model=GameOut)

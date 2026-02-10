@@ -12,11 +12,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <div className="app-shell">
           <header className="topbar">
-            <div className="logo">Game Factory</div>
+            <a className="logo" href="/">Game Factory</a>
             <nav className="top-nav">
               <a href="/">Create</a>
               <a href="/lobby">Lobby</a>
               <a href="/toolkit">Toolkit</a>
+              <a href="/account">Account</a>
             </nav>
           </header>
           {children}
