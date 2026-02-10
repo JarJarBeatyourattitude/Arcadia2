@@ -12,6 +12,7 @@ type Game = {
   prompt: string;
   code: string;
   created_at: string;
+  creator_id?: number | null;
   likes?: number;
   play_count?: number;
   multiplayer?: boolean;
