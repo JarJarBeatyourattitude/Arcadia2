@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: game-factory-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: "pip install -r apps/api/requirements.txt"
+    startCommand: "uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.2-codex
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: moonshotai/kimi-k2.5
+      - key: ALLOWED_ORIGINS
+        sync: false
+  - type: web
+    name: game-factory-web
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: apps/web
+    buildCommand: "npm install && npm run build"
+    startCommand: "npm run start"
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false

@@ -1,0 +1,6 @@
+node_modules/
+apps/web/node_modules/
+.venv/
+apps/api/game_factory.db
+.env
+.DS_Store
