@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -19,6 +19,11 @@ export default function GamePage({ params }: { params: { id: string } }) {
   const [error, setError] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [versions, setVersions] = useState<Game[]>([]);
+  const [showAllVersions, setShowAllVersions] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<any | null>(null);
 
   function withAIHelper(code: string) {
     const wsUrl = API.replace("http://", "ws://").replace("https://", "wss://");
@@ -325,12 +330,40 @@ window.GameFactoryKit = (function(){
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         setGame(data);
+        const ver = await fetch(`${API}/games/${params.id}/versions`);
+        if (ver.ok) {
+          const vdata = await ver.json();
+          setVersions(vdata);
+        }
       } catch (err: any) {
         setError(err.message || "Failed to load game");
       }
     }
     load();
   }, [params.id]);
+
+  const groupedVersions = useMemo(() => {
+    function hash(str: string) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) {
+        h = (h * 31 + str.charCodeAt(i)) | 0;
+      }
+      return h.toString(16);
+    }
+    const seen = new Map<string, { v: any; count: number }>();
+    const ordered: { v: any; count: number }[] = [];
+    for (const v of versions) {
+      const key = hash(v.code || "");
+      if (seen.has(key)) {
+        seen.get(key)!.count += 1;
+      } else {
+        const entry = { v, count: 1 };
+        seen.set(key, entry);
+        ordered.push(entry);
+      }
+    }
+    return ordered;
+  }, [versions]);
 
   async function openFullscreen() {
     if (!previewRef.current) return;
@@ -343,6 +376,55 @@ window.GameFactoryKit = (function(){
 
   function focusPreview() {
     iframeRef.current?.contentWindow?.focus();
+  }
+
+  async function submitEdit() {
+    if (!instruction.trim() || !game) return;
+    setEditing(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/games/${game.id}/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setGame(data);
+      setInstruction("");
+      const ver = await fetch(`${API}/games/${params.id}/versions`);
+      if (ver.ok) {
+        const vdata = await ver.json();
+        setVersions(vdata);
+      }
+    } catch (err: any) {
+      setError(err.message || "Edit failed");
+    } finally {
+      setEditing(false);
+    }
+  }
+
+  async function rollback(versionId: number) {
+    if (!game) return;
+    setEditing(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/games/${game.id}/rollback/${versionId}`, {
+        method: "POST"
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setGame(data);
+      const ver = await fetch(`${API}/games/${params.id}/versions`);
+      if (ver.ok) {
+        const vdata = await ver.json();
+        setVersions(vdata);
+      }
+    } catch (err: any) {
+      setError(err.message || "Rollback failed");
+    } finally {
+      setEditing(false);
+    }
   }
 
   return (
@@ -365,6 +447,80 @@ window.GameFactoryKit = (function(){
             <div className="card-title">Prompt</div>
             <div className="card-meta">{game.prompt}</div>
           </div>
+          <div className="card">
+            <div className="card-title">Edit With AI</div>
+            <div className="card-meta">Describe the change you want.</div>
+            <textarea
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              placeholder="Add a timer, new obstacles, change art style..."
+              style={{ minHeight: 120 }}
+            />
+            <div className="button-row">
+              <button onClick={submitEdit} disabled={editing}>
+                {editing ? "Editing..." : "Apply Edit"}
+              </button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Version History</div>
+            <div className="card-meta">Rollback to a previous version.</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {versions.length === 0 && <div className="card-meta">No versions yet.</div>}
+              {(showAllVersions ? groupedVersions : groupedVersions.slice(0, 6)).map((entry: any) => (
+                <div key={entry.v.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button
+                    className="secondary"
+                    onClick={() => rollback(entry.v.id)}
+                    disabled={editing}
+                    style={{ flex: 1 }}
+                  >
+                    {new Date(entry.v.created_at).toLocaleString()} — {entry.v.title} [{entry.v.action || "edit"}]
+                    {entry.count > 1 ? ` (x${entry.count})` : ""}
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => setSelectedVersion(entry.v)}
+                    disabled={editing}
+                  >
+                    Compare
+                  </button>
+                </div>
+              ))}
+            </div>
+            {groupedVersions.length > 6 && (
+              <button
+                className="secondary"
+                style={{ marginTop: 8 }}
+                onClick={() => setShowAllVersions((s) => !s)}
+              >
+                {showAllVersions ? "Show Less" : "Show All"}
+              </button>
+            )}
+          </div>
+          {selectedVersion && (
+            <div className="card">
+              <div className="card-title">Compare Versions</div>
+              <div className="card-meta">
+                Selected: {new Date(selectedVersion.created_at).toLocaleString()} — {selectedVersion.title}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <div className="card-meta">Current</div>
+                  <textarea readOnly value={game.code} style={{ minHeight: 220 }} />
+                </div>
+                <div>
+                  <div className="card-meta">Selected</div>
+                  <textarea readOnly value={selectedVersion.code} style={{ minHeight: 220 }} />
+                </div>
+              </div>
+              <div className="button-row" style={{ marginTop: 8 }}>
+                <button className="secondary" onClick={() => setSelectedVersion(null)}>
+                  Close Compare
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </main>

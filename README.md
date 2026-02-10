@@ -28,6 +28,7 @@ That’s it. The script installs dependencies, starts the API, and runs the web 
 2. Click **Generate Game** (you’ll see live build progress).
 3. Play in the live preview.
 4. Click **Save Game** to store it locally.
+5. Open a saved game and use **Edit With AI** to update it. You can roll back in **Version History**.
 
 ## Architecture
 - **Frontend:** Next.js App Router

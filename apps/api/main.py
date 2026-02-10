@@ -16,8 +16,8 @@ from openrouter import OpenRouter
 from openai import OpenAI
 
 from .db import SessionLocal, init_db
-from .models import Game
-from .schemas import AiIn, AiOut, GameCreate, GameOut, GenerateIn, GenerateOut
+from .models import Game, GameVersion
+from .schemas import AiIn, AiOut, EditIn, GameCreate, GameOut, GameVersionOut, GenerateIn, GenerateOut
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ROOT_ENV)
@@ -247,6 +247,56 @@ def _generate_game(prompt: str) -> Dict[str, str]:
     if "<html" not in code.lower():
         return _fallback_game(prompt)
 
+    return {"title": title, "description": description, "code": code}
+
+
+def _edit_game(current_code: str, instruction: str, original_prompt: str | None = None) -> Dict[str, str]:
+    openai_key = os.getenv("OPENAI_API_KEY")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if not openai_key and not openrouter_key:
+        raise ValueError("No AI API key set")
+
+    system = (
+        "You are editing an existing HTML game. "
+        "Return ONLY a JSON object with keys: title, description, code. "
+        "code must be a complete single-file HTML document. "
+        "Preserve existing functionality unless the instruction changes it. "
+        "Do not omit scripts/styles. Keep it working."
+    )
+    user = f"EDIT INSTRUCTION:\\n{instruction}\\n\\nCURRENT HTML:\\n{current_code}"
+
+    if openai_key:
+        model = os.getenv("OPENAI_MODEL", "gpt-5.2-codex")
+        client = OpenAI(api_key=openai_key)
+        response = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        content = getattr(response, "output_text", None)
+    else:
+        model = os.getenv("OPENROUTER_MODEL", "moonshotai/kimi-k2.5")
+        with OpenRouter(api_key=openrouter_key) as client:
+            response = client.chat.send(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.7,
+            )
+        content = response.choices[0].message.content if response.choices else None
+
+    payload = _extract_json(content or "")
+    if not payload:
+        raise ValueError("Failed to parse edit JSON")
+    title = str(payload.get("title") or "Untitled Game")
+    description = str(payload.get("description") or "")
+    code = str(payload.get("code") or "")
+    if "<html" not in code.lower():
+        raise ValueError("Edited code missing HTML document")
     return {"title": title, "description": description, "code": code}
 
 
@@ -491,6 +541,16 @@ def create_game(payload: GameCreate, db: Session = Depends(get_db)) -> GameOut:
     db.add(game)
     db.commit()
     db.refresh(game)
+    version = GameVersion(
+        game_id=game.id,
+        title=game.title,
+        description=game.description,
+        prompt=game.prompt,
+        code=game.code,
+        action="create",
+    )
+    db.add(version)
+    db.commit()
     return game
 
 
@@ -504,4 +564,79 @@ def get_game(game_id: int, db: Session = Depends(get_db)) -> GameOut:
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+    return game
+
+
+@app.get("/games/{game_id}/versions", response_model=list[GameVersionOut])
+def list_versions(game_id: int, db: Session = Depends(get_db)) -> list[GameVersionOut]:
+    return (
+        db.query(GameVersion)
+        .filter(GameVersion.game_id == game_id)
+        .order_by(GameVersion.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/games/{game_id}/edit", response_model=GameOut)
+def edit_game(game_id: int, payload: EditIn, db: Session = Depends(get_db)) -> GameOut:
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Save current version before editing
+    version = GameVersion(
+        game_id=game.id,
+        title=game.title,
+        description=game.description,
+        prompt=game.prompt,
+        code=game.code,
+        action="edit",
+    )
+    db.add(version)
+    db.commit()
+
+    try:
+        updated = _edit_game(game.code, payload.instruction, game.prompt)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    game.title = updated["title"]
+    game.description = updated["description"]
+    game.code = updated["code"]
+    db.commit()
+    db.refresh(game)
+    return game
+
+
+@app.post("/games/{game_id}/rollback/{version_id}", response_model=GameOut)
+def rollback_game(game_id: int, version_id: int, db: Session = Depends(get_db)) -> GameOut:
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    version = (
+        db.query(GameVersion)
+        .filter(GameVersion.id == version_id, GameVersion.game_id == game_id)
+        .first()
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # Save current before rollback
+    current = GameVersion(
+        game_id=game.id,
+        title=game.title,
+        description=game.description,
+        prompt=game.prompt,
+        code=game.code,
+        action="rollback",
+    )
+    db.add(current)
+    db.commit()
+
+    game.title = version.title
+    game.description = version.description
+    game.prompt = version.prompt
+    game.code = version.code
+    db.commit()
+    db.refresh(game)
     return game

@@ -33,6 +33,24 @@ class GenerateOut(BaseModel):
     code: str
 
 
+class GameVersionOut(BaseModel):
+    id: int
+    game_id: int
+    title: str
+    description: str
+    prompt: str
+    code: str
+    action: str | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EditIn(BaseModel):
+    instruction: str = Field(min_length=1)
+
+
 class AiIn(BaseModel):
     prompt: str = Field(min_length=1)
     system: str | None = None

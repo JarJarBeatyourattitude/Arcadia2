@@ -15,3 +15,16 @@ class Game(Base):
     prompt = Column(Text, nullable=False)
     code = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class GameVersion(Base):
+    __tablename__ = "game_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_id = Column(Integer, nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(String(400), nullable=False)
+    prompt = Column(Text, nullable=False)
+    code = Column(Text, nullable=False)
+    action = Column(String(50), nullable=False, default="edit")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

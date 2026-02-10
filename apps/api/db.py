@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 DB_PATH = Path(__file__).parent / "game_factory.db"
@@ -19,3 +19,9 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    # Lightweight migration for new columns
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE game_versions ADD COLUMN action VARCHAR(50)"))
+        except Exception:
+            pass
