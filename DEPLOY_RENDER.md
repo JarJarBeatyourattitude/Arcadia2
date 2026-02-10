@@ -33,6 +33,7 @@ This project can be deployed on Render as two services (API + Web) using the inc
 - The web service uses `NEXT_PUBLIC_API_URL` at build time. If you change the API URL later, redeploy the web service.
 - The API allows CORS only for `ALLOWED_ORIGINS`.
 - `null` must be included for iframe `srcdoc` previews.
+- The repo pins Python with `runtime.txt`, `.python-version`, and `PYTHON_VERSION` in `render.yaml`. If Render still uses 3.13, force a redeploy after the next commit.
 
 ## Troubleshooting
 - CORS errors: verify `ALLOWED_ORIGINS` includes the exact web URL and `null`.
